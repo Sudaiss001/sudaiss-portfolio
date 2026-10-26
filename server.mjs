@@ -344,7 +344,7 @@ if (isProduction) {
   const dist = path.resolve(here, "dist");
   app.use(express.static(dist));
 
-  app.get("/{*path}", (_req, res) => {
+app.get(/(.*)/, (_req, res) => {
     res.sendFile(path.join(dist, "index.html"));
   });
 }
@@ -352,3 +352,4 @@ if (isProduction) {
 server.listen(port, () => {
   console.log(`Sudaiss voice backend listening on http://localhost:${port}`);
 });
+  
