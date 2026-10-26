@@ -96,6 +96,16 @@ export default function VoiceAssistant() {
   const ringbackRef = useRef<{ stop: () => void } | null>(null);
   const turnActiveRef = useRef(false);
 
+  // Lightweight diagnostics for audio transport and session performance (no sensitive data logged)
+  const diagnosticsRef = useRef({
+    sessionStartTime: 0,
+    chunksReceived: 0,
+    totalAudioDuration: 0,
+    underrunCount: 0,
+    interruptionCount: 0,
+    lastChunkTime: 0,
+  });
+
   const stopRingback = useCallback(() => {
     if (ringbackRef.current) {
       try {
@@ -299,6 +309,15 @@ export default function VoiceAssistant() {
       sourceRef.current = null;
       streamRef.current = null;
 
+      const diag = diagnosticsRef.current;
+      if (diag.sessionStartTime > 0) {
+        const durationSec = ((Date.now() - diag.sessionStartTime) / 1000).toFixed(1);
+        console.log(
+          `[VoiceAssistant] Session summary: duration=${durationSec}s, chunks=${diag.chunksReceived}, audioDuration=${diag.totalAudioDuration.toFixed(1)}s, underruns=${diag.underrunCount}, interrupts=${diag.interruptionCount}`
+        );
+        diag.sessionStartTime = 0;
+      }
+
       setStatus(nextStatus);
 
       if (nextStatus === "ended") {
@@ -313,6 +332,11 @@ export default function VoiceAssistant() {
     const context = audioContextRef.current;
 
     if (!context || context.state === "closed") return;
+
+    // Wake context if suspended by browser idle power-saving
+    if (context.state === "suspended") {
+      void context.resume();
+    }
 
     try {
       const pcm = base64ToPcm(base64);
@@ -334,18 +358,31 @@ export default function VoiceAssistant() {
       source.connect(context.destination);
 
       const currentTime = context.currentTime;
+      const diag = diagnosticsRef.current;
+      diag.chunksReceived++;
+      diag.totalAudioDuration += audioBuffer.duration;
+      diag.lastChunkTime = performance.now();
+
       let startAt: number;
+      const isQueueDry = nextPlaybackTimeRef.current < currentTime;
 
       if (!turnActiveRef.current) {
-        // Brand new conversation response turn: prime with a 180ms pre-roll jitter cushion
+        // Brand new conversation response turn: prime with a 160ms pre-roll jitter cushion.
+        // If audio from a previous turn is still playing, ensure we queue after it cleanly without overlap.
         turnActiveRef.current = true;
-        startAt = currentTime + 0.18;
-      } else if (nextPlaybackTimeRef.current >= currentTime) {
-        // Continuous chaining during an active response with zero gap between slices
+        startAt = Math.max(currentTime + 0.16, nextPlaybackTimeRef.current);
+      } else if (!isQueueDry) {
+        // Continuous chaining during an active response: sample-accurate seamless connection
         startAt = nextPlaybackTimeRef.current;
       } else {
-        // Buffer underrun recovery: play immediately with an 8ms anti-click ramp
-        startAt = currentTime + 0.008;
+        // Buffer underrun recovery (network/generation jitter caused playback queue to empty).
+        // Re-prime with a 140ms cushion to give subsequent incoming chunks runway to arrive,
+        // preventing the recurring 8ms stutter death-spiral.
+        diag.underrunCount++;
+        startAt = currentTime + 0.14;
+        console.debug(
+          `[VoiceAssistant] Buffer underrun re-primed (+140ms). Total underruns: ${diag.underrunCount}`
+        );
       }
 
       nextPlaybackTimeRef.current = startAt + audioBuffer.duration;
@@ -406,6 +443,14 @@ export default function VoiceAssistant() {
 
     cancelledRef.current = false;
     setupCompleteRef.current = false;
+    diagnosticsRef.current = {
+      sessionStartTime: Date.now(),
+      chunksReceived: 0,
+      totalAudioDuration: 0,
+      underrunCount: 0,
+      interruptionCount: 0,
+      lastChunkTime: 0,
+    };
     finishTranscriptTurn();
     setStatus("calling");
     setMessage("Requesting microphone access…");
@@ -472,21 +517,8 @@ export default function VoiceAssistant() {
 
         const input = event.inputBuffer.getChannelData(0);
 
-        // Acoustic Echo Suppression:
-        // When the assistant is actively outputting audio, suppress low-level speaker bleed
-        // that triggers Gemini's server-side VAD barge-in, cutting off subsequent turns.
-        // If the user actually speaks out loud to interrupt, their voice energy easily exceeds 0.028.
-        const isAssistantSpeaking = playbackSourcesRef.current.length > 0;
-        let sumSquares = 0;
-        for (let i = 0; i < input.length; i++) {
-          sumSquares += input[i] * input[i];
-        }
-        const rms = Math.sqrt(sumSquares / input.length);
-
-        if (isAssistantSpeaking && rms < 0.028) {
-          return;
-        }
-
+        // Continuous linear streaming: preserve quiet speech and allow browser WebRTC AEC
+        // (Acoustic Echo Cancellation) to maintain a stable adaptive filter without non-linear drops.
         const resampled = resampleTo16k(input, context.sampleRate);
         const pcm = floatToPcm16(resampled);
 
@@ -591,7 +623,10 @@ export default function VoiceAssistant() {
           }
 
           if (content.interrupted) {
-            console.log("[VoiceAssistant] Speech interrupted by user input.");
+            diagnosticsRef.current.interruptionCount++;
+            console.log(
+              `[VoiceAssistant] Speech interrupted by user input (interruption #${diagnosticsRef.current.interruptionCount}).`
+            );
             stopPlayback();
           }
 
@@ -626,8 +661,11 @@ export default function VoiceAssistant() {
         );
       };
 
-      socket.onclose = () => {
+      socket.onclose = (event) => {
         stopRingback();
+        console.log(
+          `[VoiceAssistant] WebSocket connection closed [code: ${event.code}, reason: ${event.reason || "none"}, clean: ${event.wasClean}]`
+        );
         if (cancelledRef.current) return;
 
         setMessage("The voice connection closed. Please try again.");

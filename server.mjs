@@ -232,6 +232,7 @@ wss.on("connection", (client) => {
   };
 
   upstream.on("open", () => {
+    console.log("[server] Upstream Gemini Live connection established.");
     upstream.send(
       JSON.stringify({
         setup: {
@@ -270,7 +271,7 @@ wss.on("connection", (client) => {
     }
 
     if (client.readyState === WebSocket.OPEN) {
-      client.send(JSON.stringify(message));
+      client.send(raw.toString());
     }
 
     if (message.goAway) {
