@@ -1,4 +1,3 @@
-
 import { useCallback, useEffect, useRef, useState } from "react";
 
 type CallStatus = "idle" | "calling" | "connected" | "ended" | "error";
@@ -545,15 +544,25 @@ export default function VoiceAssistant() {
       processor.connect(silentGain);
       silentGain.connect(context.destination);
 
-      const protocol =
-        window.location.protocol === "https:" ? "wss:" : "ws:";
-      const isLocal =
-        window.location.hostname === "localhost" ||
-        window.location.hostname === "127.0.0.1";
+      // WebSocket URL resolution supporting VITE_API_BASE_URL override for Render deployment
+      const customApiBase = import.meta.env.VITE_API_BASE_URL;
+      let socketUrl: string;
 
-      const socketUrl = isLocal
-        ? `${protocol}//${window.location.hostname}:3001/api/live`
-        : `${protocol}//${window.location.host}/api/live`;
+      if (customApiBase) {
+        const wsProtocol = customApiBase.startsWith("https") ? "wss:" : "ws:";
+        const cleanBase = customApiBase.replace(/^https?:\/\//, "");
+        socketUrl = `${wsProtocol}//${cleanBase}/api/live`;
+      } else {
+        const protocol =
+          window.location.protocol === "https:" ? "wss:" : "ws:";
+        const isLocal =
+          window.location.hostname === "localhost" ||
+          window.location.hostname === "127.0.0.1";
+
+        socketUrl = isLocal
+          ? `${protocol}//${window.location.hostname}:3001/api/live`
+          : `${protocol}//${window.location.host}/api/live`;
+      }
 
       setMessage("Connecting to Sudaiss AI…");
 
