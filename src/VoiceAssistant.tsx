@@ -544,8 +544,8 @@ export default function VoiceAssistant() {
       processor.connect(silentGain);
       silentGain.connect(context.destination);
 
-      // WebSocket URL resolution supporting VITE_API_BASE_URL override for Render deployment
-      const customApiBase = import.meta.env.VITE_API_BASE_URL;
+      // WebSocket URL resolution with hardcoded fallback to Render backend
+      const customApiBase = import.meta.env.VITE_API_BASE_URL || "https://sudaiss-portfolio-p8mf.onrender.com";
       let socketUrl: string;
 
       if (customApiBase) {
